@@ -43,6 +43,32 @@ class TerminalEmulator:
     def repl(self, match):
         name = match.group(1)
         return os.environ.get(name, '')
+    def startup_script(self):
+    if not self.script_path or not os.path.exists(self.script_path):
+        self.print_output(f"Ошибка: скрипт '{self.script_path}' не найден")
+        return
+    
+    self.print_output(f"Выполнение скрипта '{self.script_path}'")
+    
+    try:
+        with open(self.script_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            for line_num, line in enumerate(lines, 1):
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                self.print_output(f"{self.prompt_text}> {line}")
+                try:
+                    self.command_reader(line)
+                except Exception as e:
+                    self.print_output(f"Строка {line_num}: ошибка - {str(e)}")
+                    self.print_output("Скрипт остановлен из-за ошибки")
+                    return
+    except Exception as e:
+        self.print_output(f'Ошибка чтения скрипта: {str(e)}')
+    
+    self.print_output("Завершение выполнения скрипта")
             
     def parse_env_var(self, command):
         pattern = r'\$(\w+)'
