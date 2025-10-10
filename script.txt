@@ -1,0 +1,60 @@
+# Тестовый скрипт для VFS Terminal Emulator
+# Демонстрация всех команд, включая touch и cp
+
+echo "=== Начало тестирования VFS команд ==="
+
+echo "1. Тестирование базовых команд"
+pwd
+ls
+ls documents/
+
+echo "2. Тестирование команды wc"
+wc test.txt
+echo "3. Проверка созданных файлов"
+ls
+ls documents/
+ls temp/
+
+echo "4. Тестирование команды cp"
+cp documents/report.txt report_backup.txt
+cp documents/projects/project1.py project1_backup.py
+cp config/settings.ini documents/settings_backup.ini
+cp newfile1.txt temp/copied_file.txt
+
+echo "5. Проверка скопированных файлов"
+ls
+ls documents/
+ls temp/
+
+echo "6. Тестирование обработки ошибок для cp"
+cp nonexistent.txt backup.txt  
+cp documents/ backup  
+cp report.txt documents/  
+
+echo "7. Тестирование tail"
+echo "--- Последние 3 строки test.txt ---"
+tail -n 3 documents/report.txt
+
+echo "8. Тестирование команды rmdir"
+echo "--- Попытка удалить пустую директорию ---"
+rmdir temp/
+echo "--- Попытка удалить непустую директорию ---"
+rmdir documents/
+echo "--- Проверка результата ---"
+ls documents/
+
+echo "9. Тестирование команды clear"
+echo "Экран будет очищен после этой строки"
+clear
+
+echo "10. Сохранение состояния VFS"
+savevfs test_save.vfs.zip
+echo "VFS сохранена в test_save.vfs.zip"
+
+echo "11. Загрузка VFS из файла"
+loadvfs test_save.vfs.zip
+echo "VFS загружена из test_save.vfs.zip"
+
+echo "12. Проверка состояния после загрузки"
+ls
+echo "=== Тестирование завершено ==="
