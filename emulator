@@ -3,7 +3,110 @@ from tkinter import scrolledtext
 import re
 from datetime import datetime
 import os
+import zipfile
+import base64
 
+class VFS:
+    def __init__(self, zip_path=None):
+        self.filesystem = {}
+        self.curr_dir = "/"
+        if zip_path:
+            self.load_from_zip(zip_path)
+        else:
+            self.create_default_vfs()
+    
+    def load_from_zip(self, zip_path):
+        try:
+            if not os.path.exists(zip_path):
+                raise FileNotFoundError(f"ZIP-файл не найден: {zip_path}")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                for file_info in zip_ref.infolist():
+                    if file_info.is_dir():
+                        dir_path = file_info.filename
+                        if not dir_path.endswith('/'):
+                            dir_path += '/'
+                        self.filesystem[dir_path] = None
+                    else:
+                        content = zip_ref.read(file_info.filename)
+                        try:
+                            content = content.decode('utf-8')
+                        except UnicodeDecodeError:
+                            content = "base64:" + base64.b64encode(content).decode('utf-8')
+                        self.filesystem[file_info.filename] = content
+            
+            print(f"VFS загружена из {zip_path}")
+            
+        except zipfile.BadZipFile:
+            raise ValueError(f"Неверный формат ZIP-файла: {zip_path}")
+        except Exception as e:
+            raise Exception(f"Ошибка загрузки VFS: {str(e)}")
+    
+    def create_default_vfs(self):
+        self.filesystem = {
+            "/": None,
+            "bin/": None,
+            "bin/app.exe": "base64:ZXhlY3V0YWJsZSBiaW5hcnkgZGF0YQ==",
+            "documents/": None,
+            "documents/report.txt": "Отчет за 2025 год \nВсе работает отлично!",
+            "documents/projects/": None,
+            "documents/projects/project1.py": "print('Hello VFS!')\n# Python код",
+            "documents/projects/project2.c": "// C код\n#include <stdio.h>\nint main() { return 0; }",
+            "config/": None,
+            "config/settings.ini": "[settings]\nlanguage = ru\ntheme = dark",
+            "temp/": None
+        }
+     
+    def normalize_path(self, path):
+        if path == ".":
+            return self.curr_dir
+        if not path.startswith("/"):
+            path = os.path.join(self.curr_dir, path).replace("\\", "/")
+
+        parts = path.split('/')
+        result_parts = []
+        for part in parts:
+            if part == "..":
+                if result_parts:
+                    result_parts.pop()
+            elif part and part != ".":
+                result_parts.append(part)
+        
+        result_path = "/".join(result_parts)
+        if path.endswith("/") and not result_path.endswith("/"):
+            result_path += "/"
+        
+        return result_path or "/"
+    
+    def get_curr_path(self):
+        return self.curr_dir
+    
+    def get_file_content(self, file_path):
+        normalized_path = self.normalize_path(file_path)
+        
+        if normalized_path in self.filesystem:
+            content = self.filesystem[normalized_path]
+            if content and content.startswith("base64:"):
+                return base64.b64decode(content[7:]).decode('latin-1')
+            return content
+        return None
+
+    def save_to_zip(self, zip_path):
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for path, content in self.filesystem.items():
+                    if path.endswith('/'):  
+                        zipf.writestr(path, '')
+                    else: 
+                        if content and content.startswith("base64:"):
+                            binary_data = base64.b64decode(content[7:])
+                            zipf.writestr(path, binary_data)
+                        else:
+                            zipf.writestr(path, content or '')
+            return True, f"VFS сохранена в {zip_path}"
+        except Exception as e:
+            return False, f"Ошибка сохранения VFS: {str(e)}"
+    
+    os.environ["PWD"] = self.vfs.get_curr_path()
 class TerminalEmulator:
     def __init__(self, root, script_path=None, vfs_path=None):
         self.root = root
@@ -79,7 +182,22 @@ class TerminalEmulator:
         self.output_area.insert(tk.END, text + "\n")
         self.output_area.config(state=tk.DISABLED)
         self.output_area.see(tk.END)
-    
+
+    def cmd_savevfs(self, args):
+        if not args:
+            self.print_output("Введите путь к zip-архиву")
+            return
+        
+        vfs_path = args[0]
+        try:
+            success, message = self.vfs.save_to_zip(vfs_path)
+            if success:
+                self.print_output(message)
+            else:
+                self.print_output(f"Ошибка: {message}")
+        except Exception as e:
+            self.print_output(f"Ошибка сохранения VFS: {str(e)}")
+
     def cmd_ls(self, args):
         self.print_output(f"ls: {' '.join(args) if args else ''}")
         self.print_output("bin/ documents/ config/ temp/")
