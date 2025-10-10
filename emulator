@@ -107,6 +107,75 @@ class VFS:
             return False, f"Ошибка сохранения VFS: {str(e)}"
     
     os.environ["PWD"] = self.vfs.get_curr_path()
+    def list_dir(self, path="."):
+        normalized_path = self.normalize_path(path)
+        
+        if normalized_path in self.filesystem and not normalized_path.endswith("/"):
+            return [os.path.basename(normalized_path)]
+        
+        if not normalized_path.endswith("/") and normalized_path != "/":
+            normalized_path += "/"
+        
+        items = set()
+        
+        for file_path in self.filesystem.keys():
+            if normalized_path == "/":
+                if file_path == "/":
+                    continue
+                if "/" in file_path:
+                    first_item = file_path.split("/")[0]
+                    if "/" in file_path[len(first_item):]:
+                        items.add(first_item + "/")
+                    else:
+                        items.add(first_item)
+                else:
+                    items.add(file_path)
+            else:
+                if file_path.startswith(normalized_path):
+                    rel_path = file_path[len(normalized_path):]
+                    if not rel_path:
+                        continue
+                    
+                    if "/" in rel_path:
+                        first_part = rel_path.split("/")[0]
+                        items.add(first_part + "/")
+                    else:
+                        items.add(rel_path)
+        
+        return sorted(list(items))
+    
+    def change_dir(self, new_dir):
+        if new_dir == "/":
+            self.curr_dir = "/"
+            return True
+        
+        normalized_path = self.normalize_path(new_dir)
+        
+        dir_path = normalized_path + "/" if not normalized_path.endswith("/") else normalized_path
+        
+        if dir_path in self.filesystem:
+            self.curr_dir = normalized_path
+            return True
+        
+        for path in self.filesystem.keys():
+            if path.startswith(normalized_path + "/") or path == normalized_path:
+                self.curr_dir = normalized_path
+                return True
+        
+        return False
+    
+    def read_file(self, file_path):
+        normalized_path = self.normalize_path(file_path)
+        
+        if normalized_path.endswith("/"):
+            return None
+        
+        if normalized_path in self.filesystem:
+            content = self.filesystem[normalized_path]
+            if content and content.startswith("base64:"):
+                return base64.b64decode(content[7:])
+            return content
+        return None
 class TerminalEmulator:
     def __init__(self, root, script_path=None, vfs_path=None):
         self.root = root
@@ -199,15 +268,138 @@ class TerminalEmulator:
             self.print_output(f"Ошибка сохранения VFS: {str(e)}")
 
     def cmd_ls(self, args):
-        self.print_output(f"ls: {' '.join(args) if args else ''}")
-        self.print_output("bin/ documents/ config/ temp/")
+        path = args[0] if args else "."
+        
+        try:
+            items = self.vfs.list_dir(path)
+            if not items:
+                self.print_output("Директория пуста")
+                return
+            
+            for item in items:
+                self.print_output(item)
+        except Exception as e:
+            self.print_output(f"Ошибка ls: {str(e)}")
     
     def cmd_cd(self, args):
-        target = args[0] if args else "/"
-        self.print_output(f"cd: {target}")
+        if not args:
+            target = "/"
+        else:
+            target = args[0]
+        
+        try:
+            success = self.vfs.change_dir(target)
+            if not success:
+                self.print_output(f"cd: {target}: Нет такой директории")
+            else:
+                self.update_environment()
+        except Exception as e:
+            self.print_output(f"Ошибка cd: {str(e)}")
     
-    def cmd_exit(self, args):
-        self.root.quit()
+    def cmd_pwd(self):
+        self.print_output(self.vfs.get_curr_path())
+            
+    def cmd_script(self, args):
+        if not args:
+            self.print_output("Использование: script <путь_к_скрипту>")
+            return
+    
+        script_path = args[0]
+        if not os.path.exists(script_path):
+            self.print_output(f"Ошибка: скрипт '{script_path}' не найден")
+            return
+    
+        self.script_path = script_path
+        self.startup_script()
+
+    def cmd_vfs(self, args):
+        if not args:
+            self.print_output("Использование: vfs <путь_к_архиву>")
+            return
+    
+        vfs_path = args[0]
+        if not os.path.exists(vfs_path):
+            self.print_output(f"Ошибка: архив '{vfs_path}' не найден")
+            return
+    
+        try:
+            self.vfs.load_from_zip(vfs_path)
+            self.vfs_path = vfs_path
+            self.update_environment()
+            self.print_output(f"VFS успешно загружена из '{vfs_path}'")
+            self.print_output(f"Текущая директория: {self.vfs.get_curr_path()}")
+        except Exception as e:
+            self.print_output(f"Ошибка загрузки VFS: {str(e)}")
+
+    def cmd_wc(self, args):
+        if not args:
+            self.print_output("wc: требуется указать файл")
+            return
+        
+        file_path = args[0]
+        try:
+            content = self.vfs.get_file_content(file_path)
+            if content is None:
+                self.print_output(f"wc: {file_path}: Нет такого файла")
+                return
+            
+            lines = content.split('\n')
+            if lines and lines[-1] == '':
+                lines = lines[:-1]
+            
+            word_count = 0
+            char_count = 0
+            
+            for line in lines:
+                words = line.split()
+                word_count += len(words)
+                char_count += len(line)
+            
+            self.print_output(f"  {len(lines)}  {word_count}  {char_count} {file_path}")
+            
+        except Exception as e:
+            self.print_output(f"Ошибка wc: {str(e)}")
+
+    def cmd_clear(self, args):
+        self.output_area.config(state=tk.NORMAL)
+        self.output_area.delete(1.0, tk.END)
+        self.output_area.config(state=tk.DISABLED)
+
+    def cmd_tail(self, args):
+        if not args:
+            self.print_output("tail: требуется указать файл")
+            return
+        
+        lines_count = 10
+        file_path = args[-1]
+
+        if len(args) >= 2 and args[0] == "-n":
+            try:
+                lines_count = int(args[1])
+                if len(args) > 2:
+                    file_path = args[2]
+            except ValueError:
+                self.print_output("tail: неверный аргумент числа строк")
+                return
+        
+        try:
+            content = self.vfs.get_file_content(file_path)
+            if content is None:
+                self.print_output(f"tail: {file_path}: Нет такого файла")
+                return
+            
+            lines = content.split('\n')
+
+            if lines and lines[-1] == '':
+                lines = lines[:-1]
+            
+            start_index = max(0, len(lines) - lines_count)
+            for i in range(start_index, len(lines)):
+                self.print_output(lines[i])
+                
+        except Exception as e:
+            self.print_output(f"Ошибка tail: {str(e)}")
+
     
     def command_reader(self, command):
         parsed = self.parse_env_var(command)
@@ -219,11 +411,27 @@ class TerminalEmulator:
         args = cmd_parts[1:]
         
         if cmd == "exit":
-            self.cmd_exit(args)
+            self.root.after(1000, self.root.destroy)
         elif cmd == "ls":
             self.cmd_ls(args)
         elif cmd == "cd":
             self.cmd_cd(args)
+        elif cmd == "pwd":
+            self.cmd_pwd()
+        elif cmd == "echo":
+            self.print_output(" ".join(args).rstrip('"').lstrip('"'))
+        elif cmd == "savevfs":
+            self.cmd_savevfs(args)
+        elif cmd == "script":
+            self.cmd_script(args)
+        elif cmd == "vfs":
+            self.cmd_vfs(args)
+        elif cmd == "wc":
+            self.cmd_wc(args)
+        elif cmd == "clear":
+            self.cmd_clear(args)
+        elif cmd == "tail":
+            self.cmd_tail(args)
         else:
             self.print_output(f"Ошибка: неизвестная команда '{cmd}'")
     
