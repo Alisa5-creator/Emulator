@@ -4,6 +4,8 @@ import re
 from datetime import datetime
 import os
 import zipfile
+import argparse
+from pathlib import Path
 import base64
 
 class VFS:
@@ -41,6 +43,7 @@ class VFS:
         except Exception as e:
             raise Exception(f"Ошибка загрузки VFS: {str(e)}")
     
+    
     def create_default_vfs(self):
         self.filesystem = {
             "/": None,
@@ -77,36 +80,6 @@ class VFS:
         
         return result_path or "/"
     
-    def get_curr_path(self):
-        return self.curr_dir
-    
-    def get_file_content(self, file_path):
-        normalized_path = self.normalize_path(file_path)
-        
-        if normalized_path in self.filesystem:
-            content = self.filesystem[normalized_path]
-            if content and content.startswith("base64:"):
-                return base64.b64decode(content[7:]).decode('latin-1')
-            return content
-        return None
-
-    def save_to_zip(self, zip_path):
-        try:
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for path, content in self.filesystem.items():
-                    if path.endswith('/'):  
-                        zipf.writestr(path, '')
-                    else: 
-                        if content and content.startswith("base64:"):
-                            binary_data = base64.b64decode(content[7:])
-                            zipf.writestr(path, binary_data)
-                        else:
-                            zipf.writestr(path, content or '')
-            return True, f"VFS сохранена в {zip_path}"
-        except Exception as e:
-            return False, f"Ошибка сохранения VFS: {str(e)}"
-    
-    os.environ["PWD"] = self.vfs.get_curr_path()
     def list_dir(self, path="."):
         normalized_path = self.normalize_path(path)
         
@@ -144,6 +117,20 @@ class VFS:
         
         return sorted(list(items))
     
+    def read_file(self, file_path):
+        normalized_path = self.normalize_path(file_path)
+        
+        if normalized_path.endswith("/"):
+            return None
+        
+        if normalized_path in self.filesystem:
+            content = self.filesystem[normalized_path]
+            if content and content.startswith("base64:"):
+                return base64.b64decode(content[7:])
+            return content
+        return None
+    
+    
     def change_dir(self, new_dir):
         if new_dir == "/":
             self.curr_dir = "/"
@@ -164,25 +151,89 @@ class VFS:
         
         return False
     
-    def read_file(self, file_path):
+    def get_curr_path(self):
+        return self.curr_dir
+    
+    def get_file_content(self, file_path):
         normalized_path = self.normalize_path(file_path)
-        
-        if normalized_path.endswith("/"):
-            return None
         
         if normalized_path in self.filesystem:
             content = self.filesystem[normalized_path]
             if content and content.startswith("base64:"):
-                return base64.b64decode(content[7:])
+                return base64.b64decode(content[7:]).decode('latin-1')
             return content
         return None
+
+    def save_to_zip(self, zip_path):
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for path, content in self.filesystem.items():
+                    if path.endswith('/'):  
+                        zipf.writestr(path, '')
+                    else: 
+                        if content and content.startswith("base64:"):
+                            binary_data = base64.b64decode(content[7:])
+                            zipf.writestr(path, binary_data)
+                        else:
+                            zipf.writestr(path, content or '')
+            return True, f"VFS сохранена в {zip_path}"
+        except Exception as e:
+            return False, f"Ошибка сохранения VFS: {str(e)}"
+    def remove_directory(self, dir_path):
+        
+        normalized_path = self.normalize_path(dir_path)
+        
+        if not normalized_path.endswith("/"):
+            normalized_path += "/"
+        
+        if normalized_path not in self.filesystem:
+            return False, f"rmdir: {dir_path}: Нет такой директории"
+        
+        items_in_dir = []
+        for path in self.filesystem.keys():
+            if path.startswith(normalized_path) and path != normalized_path:
+                items_in_dir.append(path)
+        
+        if items_in_dir:
+            return False, f"rmdir: {dir_path}: Директория не пуста"
+        
+        del self.filesystem[normalized_path]
+        return True, f"Директория '{normalized_path}' удалена"
+
+    def remove_directory_force(self, dir_path):
+        normalized_path = self.normalize_path(dir_path)
+        
+        if not normalized_path.endswith("/"):
+            normalized_path += "/"
+            
+        if normalized_path not in self.filesystem:
+            return False, f"rmdir: {dir_path}: Нет такой директории", 0
+        
+        items_to_delete = []
+        for path in list(self.filesystem.keys()):
+            if path.startswith(normalized_path):
+                items_to_delete.append(path)
+        
+        deleted_count = 0
+        for path in items_to_delete:
+            del self.filesystem[path]
+            deleted_count += 1
+        
+        return True, f"Директория '{normalized_path}' и её содержимое удалены", deleted_count
+        
+
 class TerminalEmulator:
     def __init__(self, root, script_path=None, vfs_path=None):
         self.root = root
         self.vfs_path = vfs_path or os.getcwd()
         self.root.title("VFS Terminal Emulator")
 
-        self.vfs = None
+        try:
+            self.vfs = VFS(vfs_path)
+        except Exception as e:
+            self.print_output(f"Ошибка VFS: {str(e)}")
+            self.root.quit()
+            return 
         
         self.script_path = script_path
         main_frame = tk.Frame(self.root)
@@ -196,7 +247,7 @@ class TerminalEmulator:
         input_frame.pack(fill=tk.X, pady=(5, 0))
 
         os.environ["DATE"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        os.environ["PWD"] = "/"
+        os.environ["PWD"] = self.vfs.get_curr_path()
         os.environ["USER"] = os.getlogin() if hasattr(os, 'getlogin') else "user"
         os.environ["HOME"] = "/"
         
@@ -211,36 +262,13 @@ class TerminalEmulator:
         self.input_field.bind('<Return>', self.process_command)
        
         self.print_output("")
+        
+        if script_path:
+            self.startup_script()
     
     def repl(self, match):
         name = match.group(1)
         return os.environ.get(name, '')
-    def startup_script(self):
-    if not self.script_path or not os.path.exists(self.script_path):
-        self.print_output(f"Ошибка: скрипт '{self.script_path}' не найден")
-        return
-    
-    self.print_output(f"Выполнение скрипта '{self.script_path}'")
-    
-    try:
-        with open(self.script_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            for line_num, line in enumerate(lines, 1):
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                
-                self.print_output(f"{self.prompt_text}> {line}")
-                try:
-                    self.command_reader(line)
-                except Exception as e:
-                    self.print_output(f"Строка {line_num}: ошибка - {str(e)}")
-                    self.print_output("Скрипт остановлен из-за ошибки")
-                    return
-    except Exception as e:
-        self.print_output(f'Ошибка чтения скрипта: {str(e)}')
-    
-    self.print_output("Завершение выполнения скрипта")
             
     def parse_env_var(self, command):
         pattern = r'\$(\w+)'
@@ -251,6 +279,37 @@ class TerminalEmulator:
         self.output_area.insert(tk.END, text + "\n")
         self.output_area.config(state=tk.DISABLED)
         self.output_area.see(tk.END)
+    
+    def update_environment(self):
+        os.environ["PWD"] = self.vfs.get_curr_path()
+
+    def startup_script(self):
+        if not self.script_path or not os.path.exists(self.script_path):
+            self.print_output(f"Ошибка: скрипт '{self.script_path}' не найден")
+            return
+        
+        self.print_output(f"Выполнение скрипта '{self.script_path}'")
+        
+        try:
+            with open(self.script_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                for line_num, line in enumerate(lines, 1):
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    self.print_output(f"{self.prompt_text}> {line}")
+                    try:
+                        self.command_reader(line)
+                    except Exception as e:
+                        self.print_output(f"Строка {line_num}: ошибка - {str(e)}")
+                        continue
+
+        except Exception as e:
+            self.print_output(f'Ошибка чтения скрипта: {str(e)}')
+        
+        self.print_output("Завершение выполнения скрипта")
+        self.print_output("")
 
     def cmd_savevfs(self, args):
         if not args:
@@ -266,7 +325,7 @@ class TerminalEmulator:
                 self.print_output(f"Ошибка: {message}")
         except Exception as e:
             self.print_output(f"Ошибка сохранения VFS: {str(e)}")
-
+    
     def cmd_ls(self, args):
         path = args[0] if args else "."
         
@@ -400,6 +459,43 @@ class TerminalEmulator:
         except Exception as e:
             self.print_output(f"Ошибка tail: {str(e)}")
 
+    def cmd_rmdir(self, args):
+    
+        if not args:
+            self.print_output("rmdir: требуется указать директорию")
+            self.print_output("Использование: rmdir [-r|--force] <директория>")
+            return
+        
+        force = False
+        dir_path = args[-1]
+        
+        if len(args) >= 2:
+            if args[0] in ["-r", "-R", "--recursive", "--force"]:
+                force = True
+                if len(args) > 2:
+                    self.print_output("rmdir: слишком много аргументов")
+                    return
+            else:
+                self.print_output(f"rmdir: неверный аргумент '{args[0]}'")
+                return
+        
+        try:
+            if force:
+                success, message, count = self.vfs.remove_directory_force(dir_path)
+                if success:
+                    self.print_output(message)
+                    self.print_output(f"Удалено элементов: {count}")
+                else:
+                    self.print_output(message)
+            else:
+                success, message = self.vfs.remove_directory(dir_path)
+                if success:
+                    self.print_output(message)
+                else:
+                    self.print_output(message)
+                    
+        except Exception as e:
+            self.print_output(f"Ошибка rmdir: {str(e)}")
     
     def command_reader(self, command):
         parsed = self.parse_env_var(command)
@@ -432,6 +528,8 @@ class TerminalEmulator:
             self.cmd_clear(args)
         elif cmd == "tail":
             self.cmd_tail(args)
+        elif cmd == "rmdir":
+            self.cmd_rmdir(args)
         else:
             self.print_output(f"Ошибка: неизвестная команда '{cmd}'")
     
@@ -446,9 +544,10 @@ class TerminalEmulator:
             self.command_reader(command)
         except Exception as e:
             self.print_output(f"Ошибка: {str(e)}")
+    
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    root.geometry("800x600") 
-    terminal = TerminalEmulator(root)
-    root.mainloop()
+root = tk.Tk()
+root.geometry("800x600") 
+
+terminal = TerminalEmulator(root, "", "")
+root.mainloop()
